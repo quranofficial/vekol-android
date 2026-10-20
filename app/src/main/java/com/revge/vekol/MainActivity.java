@@ -1,32 +1,33 @@
 package com.revge.vekol;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.pm.PackageManager;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
 import android.os.Bundle;
-import android.view.Gravity;
-import android.view.View;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.TextView;
-import android.widget.Toast;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.IOException;
 
 public class MainActivity extends Activity {
 
     private TextView status;
-    private ProgressBar progress;
-    private Button downloadButton;
+    private Button recordButton;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    private final String BASE_URL =
-        "https://huggingface.co/RevgeAI/vekol-stt-ckb-tiny/resolve/main/";
+    private static final int REQUEST_MIC = 100;
+    private static final int SAMPLE_RATE = 16000;
+    private static final int RECORD_SECONDS = 5;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,7 +36,7 @@ public class MainActivity extends Activity {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setGravity(Gravity.CENTER);
-        layout.setPadding(32, 48, 32, 32);
+        layout.setPadding(32, 40, 32, 32);
 
         TextView title = new TextView(this);
         title.setText("یاریدەدەری کوردی");
@@ -44,124 +45,143 @@ public class MainActivity extends Activity {
         layout.addView(title);
 
         status = new TextView(this);
-        status.setText("مۆدێلی Vekol ئامادە بکە");
         status.setTextSize(17);
         status.setGravity(Gravity.CENTER);
         status.setPadding(0, 24, 0, 24);
         layout.addView(status);
 
-        progress = new ProgressBar(this, null,
-                android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(100);
-        progress.setProgress(0);
-        layout.addView(progress, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 24));
+        Button checkButton = new Button(this);
+        checkButton.setText("پشکنینی مۆدێل");
+        layout.addView(checkButton);
+        checkButton.setOnClickListener(v -> checkModels());
 
-        downloadButton = new Button(this);
-        downloadButton.setText("⬇️ دابەزاندنی مۆدێل");
-        layout.addView(downloadButton);
-
-        downloadButton.setOnClickListener(v -> startDownloads());
+        recordButton = new Button(this);
+        recordButton.setText("🎙️ تۆمارکردنی دەنگ");
+        layout.addView(recordButton);
+        recordButton.setOnClickListener(v -> requestMic());
 
         setContentView(layout);
+        checkModels();
     }
 
-    private void startDownloads() {
-        downloadButton.setEnabled(false);
-        progress.setProgress(0);
-        status.setText("ئامادەکاری دابەزاندن...");
+    private void checkModels() {
+        File dir = new File(getFilesDir(), "vekol");
+
+        File encoder = new File(dir, "encoder_model.onnx");
+        File decoder = new File(dir, "decoder_model_merged.onnx");
+
+        boolean ok = encoder.isFile() && decoder.isFile()
+                && encoder.length() > 0 && decoder.length() > 0;
+
+        if (ok) {
+            status.setText("فایلەکانی مۆدێل هەن.\nئامادەی تۆمارکردنی دەنگین.");
+        } else {
+            status.setText("فایلەکانی مۆدێل نەدۆزرایەوە.\nسەرەتا دابەزاندنیان تەواو بکە.");
+        }
+    }
+
+    private void requestMic() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.RECORD_AUDIO},
+                    REQUEST_MIC);
+            return;
+        }
+        recordAudio();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+
+        if (requestCode == REQUEST_MIC && results.length > 0
+                && results[0] == PackageManager.PERMISSION_GRANTED) {
+            recordAudio();
+        } else if (requestCode == REQUEST_MIC) {
+            status.setText("بۆ تۆمارکردن پێویستە مۆڵەتی مایک بدەیت.");
+        }
+    }
+
+    private void recordAudio() {
+        recordButton.setEnabled(false);
+        status.setText("تۆمارکردنی دەنگ دەستی پێکرد...");
 
         new Thread(() -> {
-            String[] files = {
-                "encoder_model.onnx",
-                "decoder_model_merged.onnx"
-            };
+            int minBuffer = AudioRecord.getMinBufferSize(
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+
+            if (minBuffer <= 0) {
+                showError("ئامادەکردنی مایک سەرکەوتوو نەبوو.");
+                return;
+            }
+
+            AudioRecord recorder = null;
 
             try {
-                File dir = new File(getFilesDir(), "vekol");
-                if (!dir.exists() && !dir.mkdirs()) {
-                    throw new Exception("نەتوانرا بوخچە دروست بکرێت");
+                recorder = new AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        SAMPLE_RATE,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        Math.max(minBuffer, SAMPLE_RATE * 2));
+
+                if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                    throw new IOException("مایک ئامادە نییە.");
                 }
 
-                for (String name : files) {
-                    File target = new File(dir, name);
+                short[] samples = new short[SAMPLE_RATE * RECORD_SECONDS];
+                recorder.startRecording();
 
-                    if (target.exists() && target.length() > 0) {
-                        continue;
+                int offset = 0;
+                while (offset < samples.length) {
+                    int n = recorder.read(
+                            samples, offset, samples.length - offset);
+
+                    if (n < 0) {
+                        throw new IOException("هەڵە لە خوێندنەوەی دەنگ.");
                     }
+                    offset += n;
+                }
 
-                    File temp = new File(dir, name + ".part");
-                    URL url = new URL(BASE_URL + name);
-                    HttpURLConnection connection =
-                            (HttpURLConnection) url.openConnection();
+                recorder.stop();
 
-                    connection.setConnectTimeout(20000);
-                    connection.setReadTimeout(60000);
-                    connection.setInstanceFollowRedirects(true);
-                    connection.connect();
-
-                    int code = connection.getResponseCode();
-                    if (code != 200) {
-                        connection.disconnect();
-                        throw new Exception(
-                            "هەڵەی دابەزاندن: HTTP " + code);
-                    }
-
-                    int total = connection.getContentLength();
-                    long downloaded = 0;
-
-                    try (InputStream in = connection.getInputStream();
-                         FileOutputStream out = new FileOutputStream(temp)) {
-                        byte[] buffer = new byte[65536];
-                        int count;
-
-                        while ((count = in.read(buffer)) != -1) {
-                            out.write(buffer, 0, count);
-                            downloaded += count;
-
-                            if (total > 0) {
-                                final int percent =
-                                    (int) (downloaded * 100 / total);
-                                handler.post(() -> {
-                                    status.setText(
-                                        "دابەزاندن: " + name +
-                                        " — " + percent + "%");
-                                    progress.setProgress(percent);
-                                });
-                            }
-                        }
-                    } finally {
-                        connection.disconnect();
-                    }
-
-                    if (temp.length() == 0 ||
-                        (total > 0 && temp.length() != total)) {
-                        temp.delete();
-                        throw new Exception("فایلی ناتەواو: " + name);
-                    }
-
-                    if (!temp.renameTo(target)) {
-                        temp.delete();
-                        throw new Exception("نەتوانرا فایل هەڵبگیرێت");
+                File output = new File(getFilesDir(), "recording.pcm");
+                try (FileOutputStream out = new FileOutputStream(output)) {
+                    for (short sample : samples) {
+                        out.write(sample & 0xff);
+                        out.write((sample >> 8) & 0xff);
                     }
                 }
 
                 handler.post(() -> {
-                    progress.setProgress(100);
                     status.setText(
-                        "فایلەکان دابەزێنران. هێشتا پێویستە مۆدێلەکە پێکەوە ببەسترێت.");
-                    downloadButton.setEnabled(true);
-                    Toast.makeText(this, "دابەزاندن تەواو بوو",
-                            Toast.LENGTH_LONG).show();
+                            "تۆمارکردن تەواو بوو.\n" +
+                            "فایل: recording.pcm\n" +
+                            "ئەمە هێشتا دەقی ناسراو نییە.");
+                    recordButton.setEnabled(true);
                 });
 
             } catch (Exception e) {
-                handler.post(() -> {
-                    status.setText("دابەزاندن سەرکەوتوو نەبوو: " +
-                            e.getMessage());
-                    downloadButton.setEnabled(true);
-                });
+                showError("هەڵە: " + e.getMessage());
+            } finally {
+                if (recorder != null) {
+                    try {
+                        recorder.release();
+                    } catch (Exception ignored) {}
+                }
             }
         }).start();
+    }
+
+    private void showError(String message) {
+        handler.post(() -> {
+            status.setText(message);
+            recordButton.setEnabled(true);
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        });
     }
 }
