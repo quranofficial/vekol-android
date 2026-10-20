@@ -1,4 +1,3 @@
-
 package com.revge.vekol;
 
 import android.Manifest;
@@ -16,6 +15,7 @@ import android.os.Looper;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -32,6 +32,7 @@ import java.net.URL;
 public class MainActivity extends Activity {
 
     private TextView status;
+    private Button folderButton;
     private Button downloadButton;
     private Button recordButton;
 
@@ -51,8 +52,11 @@ public class MainActivity extends Activity {
 
     private static final String ENCODER = "encoder_model.onnx";
     private static final String DECODER = "decoder_model_merged.onnx";
+    private static final String VOCAB = "vocab.json";
+    private static final String MEL = "mel_filters.npy";
 
     private volatile boolean downloading = false;
+    private volatile boolean recording = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -60,12 +64,12 @@ public class MainActivity extends Activity {
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER);
-        layout.setPadding(28, 36, 28, 28);
+        layout.setGravity(Gravity.CENTER_HORIZONTAL);
+        layout.setPadding(24, 32, 24, 24);
 
         TextView title = new TextView(this);
         title.setText("یاریدەدەری کوردی\nVekol STT");
-        title.setTextSize(25);
+        title.setTextSize(27);
         title.setGravity(Gravity.CENTER);
         layout.addView(title);
 
@@ -75,13 +79,13 @@ public class MainActivity extends Activity {
         status.setPadding(0, 24, 0, 24);
         layout.addView(status);
 
-        Button folderButton = new Button(this);
+        folderButton = new Button(this);
         folderButton.setText("📁 هەڵبژاردنی بوخچەی مۆدێل");
         layout.addView(folderButton);
         folderButton.setOnClickListener(v -> chooseFolder());
 
         downloadButton = new Button(this);
-        downloadButton.setText("⬇️ پشکنین و دابەزاندنی مۆدێل");
+        downloadButton.setText("⬇️ پشکنین و دابەزاندنی ٤ فایل");
         layout.addView(downloadButton);
         downloadButton.setOnClickListener(v -> startDownloads());
 
@@ -90,7 +94,18 @@ public class MainActivity extends Activity {
         layout.addView(recordButton);
         recordButton.setOnClickListener(v -> requestMic());
 
-        setContentView(layout);
+        TextView note = new TextView(this);
+        note.setText(
+                "\nتێبینی: تۆمارکردن کار دەکات، بەڵام " +
+                "بەشی گۆڕینی دەنگ بۆ دەق هێشتا جێبەجێ نەکراوە."
+        );
+        note.setTextSize(14);
+        layout.addView(note);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(layout);
+        setContentView(scroll);
+
         checkModels();
     }
 
@@ -110,54 +125,56 @@ public class MainActivity extends Activity {
 
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == REQUEST_FOLDER &&
-                resultCode == RESULT_OK &&
-                data != null && data.getData() != null) {
+        if (requestCode != REQUEST_FOLDER ||
+                resultCode != RESULT_OK ||
+                data == null || data.getData() == null) {
+            return;
+        }
 
-            Uri uri = data.getData();
+        Uri uri = data.getData();
 
-            try {
-                int flags = data.getFlags() &
-                        (Intent.FLAG_GRANT_READ_URI_PERMISSION |
-                         Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            int flags = data.getFlags() &
+                    (Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
 
-                getContentResolver().takePersistableUriPermission(uri, flags);
+            getContentResolver().takePersistableUriPermission(uri, flags);
 
-                getSharedPreferences(PREFS, MODE_PRIVATE)
-                        .edit()
-                        .putString(FOLDER_URI, uri.toString())
-                        .apply();
+            getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putString(FOLDER_URI, uri.toString())
+                    .apply();
 
-                DocumentFile folder = DocumentFile.fromTreeUri(this, uri);
+            DocumentFile folder = DocumentFile.fromTreeUri(this, uri);
 
-                if (folder != null && folder.isDirectory()) {
-                    status.setText(
-                            "بوخچە هەڵبژێردرا.\n" +
-                            "ئێستا پشکنین و دابەزاندن بکە."
-                    );
-                } else {
-                    status.setText("بوخچەکە دروست نییە.");
-                }
-
-            } catch (Exception e) {
-                status.setText("نەتوانرا دەستگەیشتن بە بوخچەکە پاشەکەوت بکرێت.");
+            if (folder != null && folder.isDirectory() && folder.canWrite()) {
+                status.setText(
+                        "بوخچە هەڵبژێردرا.\n" +
+                        "ئێستا پشکنین و دابەزاندن بکە."
+                );
+                checkModels();
+            } else {
+                status.setText("نەتوانرا بوخچەکە بۆ نووسین بەکاربهێنرێت.");
             }
+
+        } catch (Exception e) {
+            status.setText("هەڵە لە هەڵبژاردنی بوخچە: " + errorText(e));
         }
     }
 
     private DocumentFile getFolder() {
-        SharedPreferences prefs =
-                getSharedPreferences(PREFS, MODE_PRIVATE);
-
-        String saved = prefs.getString(FOLDER_URI, null);
+        String saved = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(FOLDER_URI, null);
 
         if (saved == null) return null;
 
         try {
-            Uri uri = Uri.parse(saved);
-            DocumentFile folder = DocumentFile.fromTreeUri(this, uri);
+            DocumentFile folder = DocumentFile.fromTreeUri(
+                    this, Uri.parse(saved));
 
-            if (folder != null && folder.isDirectory() && folder.canWrite()) {
+            if (folder != null &&
+                    folder.isDirectory() &&
+                    folder.canWrite()) {
                 return folder;
             }
         } catch (Exception ignored) {
@@ -169,19 +186,33 @@ public class MainActivity extends Activity {
     private DocumentFile findFile(DocumentFile folder, String name) {
         if (folder == null) return null;
 
-        for (DocumentFile file : folder.listFiles()) {
-            if (name.equals(file.getName())) {
-                return file;
+        try {
+            for (DocumentFile file : folder.listFiles()) {
+                if (name.equals(file.getName())) {
+                    return file;
+                }
             }
+        } catch (Exception ignored) {
         }
+
         return null;
     }
 
-    private boolean validFile(DocumentFile folder, String name, long minimum) {
+    private boolean validFile(
+            DocumentFile folder, String name, long minimumBytes) {
+
         DocumentFile file = findFile(folder, name);
 
-        return file != null && file.isFile()
-                && file.length() >= minimum;
+        return file != null &&
+                file.isFile() &&
+                file.length() >= minimumBytes;
+    }
+
+    private boolean allModelsReady(DocumentFile folder) {
+        return validFile(folder, ENCODER, 5_000_000L) &&
+                validFile(folder, DECODER, 50_000_000L) &&
+                validFile(folder, VOCAB, 1_000L) &&
+                validFile(folder, MEL, 1_000L);
     }
 
     private void checkModels() {
@@ -194,20 +225,32 @@ public class MainActivity extends Activity {
             return;
         }
 
-        boolean encoderOK = validFile(folder, ENCODER, 5_000_000);
-        boolean decoderOK = validFile(folder, DECODER, 50_000_000);
+        StringBuilder result = new StringBuilder();
 
-        if (encoderOK && decoderOK) {
-            status.setText(
-                    "هەردوو فایلی مۆدێل هەن.\n" +
-                    "پێویست ناکات دووبارە دایانبەزێنیت."
-            );
+        appendFileStatus(result, folder, ENCODER, 5_000_000L);
+        appendFileStatus(result, folder, DECODER, 50_000_000L);
+        appendFileStatus(result, folder, VOCAB, 1_000L);
+        appendFileStatus(result, folder, MEL, 1_000L);
+
+        if (allModelsReady(folder)) {
+            result.append("\nهەموو ٤ فایلەکە بوونیان هەیە.");
+            result.append("\nفایلەکان پێویستیان بە دابەزاندنەوە نییە.");
         } else {
-            status.setText(
-                    "هەندێک فایل نییە یان بچووکە.\n" +
-                    "دوگمەی دابەزاندن دابگرە."
-            );
+            result.append("\nهەندێک فایل نییە یان قەبارەی گونجاوی نییە.");
+            result.append("\nدوگمەی دابەزاندن دابگرە.");
         }
+
+        status.setText(result.toString());
+    }
+
+    private void appendFileStatus(
+            StringBuilder result,
+            DocumentFile folder,
+            String name,
+            long minimum) {
+
+        result.append(validFile(folder, name, minimum) ? "✅ " : "❌ ");
+        result.append(name).append("\n");
     }
 
     private void startDownloads() {
@@ -227,54 +270,65 @@ public class MainActivity extends Activity {
 
         downloading = true;
         downloadButton.setEnabled(false);
+        folderButton.setEnabled(false);
 
         new Thread(() -> {
             try {
-                downloadIfMissing(folder, ENCODER, 5_000_000);
-                downloadIfMissing(folder, DECODER, 50_000_000);
+                downloadIfMissing(folder, ENCODER, 5_000_000L);
+                downloadIfMissing(folder, DECODER, 50_000_000L);
+                downloadIfMissing(folder, VOCAB, 1_000L);
+                downloadIfMissing(folder, MEL, 1_000L);
 
                 handler.post(() -> {
-                    status.setText(
-                            "پشکنین و دابەزاندن تەواو بوو.\n" +
-                            "ئێستا فایلەکانت لە بوخچەکەدان."
-                    );
                     checkModels();
+
+                    if (allModelsReady(folder)) {
+                        status.setText(status.getText() +
+                                "\n\nپشکنینی قەبارە تەواو بوو.");
+                    }
                 });
 
             } catch (Exception e) {
-                String message = e.getMessage();
+                String message = errorText(e);
 
                 handler.post(() -> status.setText(
-                        "دابەزاندن سەرکەوتوو نەبوو:\n" +
-                        (message == null ? "هەڵەی نەناسراو" : message)
+                        "دابەزاندن تەواو نەبوو:\n" + message
                 ));
 
             } finally {
                 downloading = false;
-                handler.post(() -> downloadButton.setEnabled(true));
+
+                handler.post(() -> {
+                    downloadButton.setEnabled(true);
+                    folderButton.setEnabled(true);
+                });
             }
         }).start();
     }
 
     private void downloadIfMissing(
-            DocumentFile folder, String name, long minimum) throws Exception {
+            DocumentFile folder,
+            String name,
+            long minimumBytes) throws Exception {
 
         DocumentFile existing = findFile(folder, name);
 
-        if (existing != null && existing.isFile()
-                && existing.length() >= minimum) {
-            updateStatus(name + " هەیە؛ دابەزاندن پێویست نییە.");
+        if (existing != null &&
+                existing.isFile() &&
+                existing.length() >= minimumBytes) {
+            updateStatus("✅ " + name + " هەیە؛ دابەزاندنەوە پێویست نییە.");
             return;
         }
 
-        if (existing != null) {
-            existing.delete();
+        if (existing != null && !existing.delete()) {
+            throw new IOException("نەتوانرا فایلی کۆن بسڕدرێتەوە: " + name);
         }
 
-        DocumentFile temp = findFile(folder, name + ".part");
-        if (temp != null) temp.delete();
+        DocumentFile oldTemp = findFile(folder, name + ".part");
+        if (oldTemp != null) oldTemp.delete();
 
-        temp = folder.createFile("application/octet-stream", name + ".part");
+        DocumentFile temp = folder.createFile(
+                "application/octet-stream", name + ".part");
 
         if (temp == null) {
             throw new IOException("نەتوانرا فایل دروست بکرێت: " + name);
@@ -294,23 +348,24 @@ public class MainActivity extends Activity {
             int response = connection.getResponseCode();
 
             if (response != HttpURLConnection.HTTP_OK) {
-                throw new IOException("HTTP " + response + " بۆ " + name);
+                throw new IOException(
+                        "HTTP " + response + " بۆ " + name);
             }
 
             long total = connection.getContentLengthLong();
             long written = 0;
+            int lastPercent = -1;
 
             try (InputStream in = connection.getInputStream();
-                 OutputStream out =
-                         getContentResolver().openOutputStream(temp.getUri(), "wt")) {
+                 OutputStream out = getContentResolver()
+                         .openOutputStream(temp.getUri(), "wt")) {
 
                 if (out == null) {
-                    throw new IOException("نەتوانرا فایل بنووسرێت.");
+                    throw new IOException("نەتوانرا فایل بنووسرێت: " + name);
                 }
 
                 byte[] buffer = new byte[64 * 1024];
                 int count;
-                int lastPercent = -1;
 
                 while ((count = in.read(buffer)) != -1) {
                     out.write(buffer, 0, count);
@@ -334,10 +389,11 @@ public class MainActivity extends Activity {
                         );
                     }
                 }
+
                 out.flush();
             }
 
-            if (written < minimum || temp.length() < minimum) {
+            if (written < minimumBytes || temp.length() < minimumBytes) {
                 throw new IOException("فایلی دابەزێنراو ناتەواوە: " + name);
             }
 
@@ -353,11 +409,18 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String errorText(Exception e) {
+        String message = e.getMessage();
+        return message == null ? e.getClass().getSimpleName() : message;
+    }
+
     private void updateStatus(String message) {
         handler.post(() -> status.setText(message));
     }
 
     private void requestMic() {
+        if (recording) return;
+
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(
@@ -365,6 +428,7 @@ public class MainActivity extends Activity {
                     REQUEST_MIC);
             return;
         }
+
         recordAudio();
     }
 
@@ -374,8 +438,9 @@ public class MainActivity extends Activity {
 
         super.onRequestPermissionsResult(requestCode, permissions, results);
 
-        if (requestCode == REQUEST_MIC && results.length > 0
-                && results[0] == PackageManager.PERMISSION_GRANTED) {
+        if (requestCode == REQUEST_MIC &&
+                results.length > 0 &&
+                results[0] == PackageManager.PERMISSION_GRANTED) {
             recordAudio();
         } else if (requestCode == REQUEST_MIC) {
             status.setText("بۆ تۆمارکردن پێویستە مۆڵەتی مایک بدەیت.");
@@ -383,6 +448,9 @@ public class MainActivity extends Activity {
     }
 
     private void recordAudio() {
+        if (recording) return;
+
+        recording = true;
         recordButton.setEnabled(false);
         status.setText("تۆمارکردنی دەنگ دەستی پێکرد...");
 
@@ -422,6 +490,7 @@ public class MainActivity extends Activity {
                     if (n <= 0) {
                         throw new IOException("هەڵە لە خوێندنەوەی دەنگ.");
                     }
+
                     offset += n;
                 }
 
@@ -443,16 +512,20 @@ public class MainActivity extends Activity {
                 ));
 
             } catch (Exception e) {
+                String message = errorText(e);
                 handler.post(() -> status.setText(
-                        "هەڵەی تۆمارکردن: " + e.getMessage()
+                        "هەڵەی تۆمارکردن: " + message
                 ));
 
             } finally {
                 if (recorder != null) {
                     try {
                         recorder.release();
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                    }
                 }
+
+                recording = false;
                 handler.post(() -> recordButton.setEnabled(true));
             }
         }).start();
